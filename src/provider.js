@@ -128,9 +128,9 @@ export class ConfigProvider {
 
   async applyFlavors(input, flavors, stack = []) {
     const names = Array.isArray(flavors) ? flavors : [flavors]
-    let output = input
+    let output = cloneValue(input)
     for (const name of names) {
-      output = await this.evaluateFlavor(normalizeFlavorName(name), output, stack)
+      output = cloneValue(await this.evaluateFlavor(normalizeFlavorName(name), output, stack))
     }
     return output
   }
