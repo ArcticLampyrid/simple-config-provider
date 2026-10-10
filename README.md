@@ -1,24 +1,23 @@
 # simple-config-provider
 
-`simple-config-provider` is a small Node.js service for distributing JSON,
-JSON5, YAML, and TOML configuration. A flavor is either a plain configuration
-file or an executable JavaScript module.
+A small Rust service for distributing JSON, JSON5, YAML, and TOML configuration. A flavor is either a plain configuration file or an interpreted JavaScript ES module.
 
 ## Quick start
 
+Build prerequisites: Rust 1.95+, Node.js 24 with npm, a C/C++ toolchain, CMake, pkg-config, Git, and the `zstd` command. Node.js is used only to build LLRT’s bundled libraries, not to run the service.
+
 ```sh
-pnpm install
-pnpm start
+node scripts/prepare-llrt.mjs
+cargo run --release --locked
 ```
 
-The service reads `config/config.json5` and flavor files from
-`config/flavor/`. `HOST`, `PORT`, and `CONFIG_DIR` can be used to change the
-runtime defaults (`0.0.0.0`, `3000`, and `./config`).
+Run the preparation step after a fresh checkout or a change to the LLRT revision. It locates LLRT through Cargo metadata and runs the upstream locked Yarn install and bundler in Cargo’s dependency checkout. No upstream code is patched.
 
-## Endpoints and flavors
+The service reads config/config.json5 and flavor files from config/flavor/. Set HOST, PORT, and CONFIG_DIR to change the defaults: 0.0.0.0, 3000, and ./config.
 
-The URL extension selects the output format, while the name before the
-extension selects a flavor:
+## Endpoints
+
+The URL extension selects output format and the preceding path selects a flavor:
 
 ```text
 /base.json?token=secret
@@ -27,16 +26,7 @@ extension selects a flavor:
 /long/path/one.toml?token=secret
 ```
 
-The service looks for the flavor in this order:
-
-1. `<name>.mjs`
-2. `<name>.js`
-3. `<name>.json5`, `<name>.json`, `<name>.yaml`, `<name>.yml`, or
-   `<name>.toml`
-
-A plain flavor ignores its input and always returns the parsed file. An
-executable flavor must export a default function with the shape
-`(input) => value | Promise<value>`:
+Flavor lookup order is .mjs, .js, .json5, .json, .yaml, .yml, then .toml. Plain flavors ignore input. Script flavors export a default function:
 
 ```js
 export default async function (input) {
@@ -45,24 +35,31 @@ export default async function (input) {
 }
 ```
 
-Every flavor therefore behaves like an `(input: any): any | Promise<any>`
-function. A plain configuration file is equivalent to `map(_): any` and
-always returns the same output regardless of its input.
+applyFlavor(input, name) accepts one name or an array of names. Script modules can use global fetch, Buffer, atob, btoa, TextEncoder, and TextDecoder; buffer, node:buffer, url, and node:url are available as module imports.
 
-`applyFlavor(input, name)` applies one flavor. Passing an array applies them
-in order. Flavor modules can use Node's global `fetch` and `Buffer`, while
-`buffer` and `url` can be imported normally:
+Scripted requests use `llrt_core::vm::Vm` (LLRT 0.9.0-beta, rquickjs 0.14). LLRT initializes the context, loaders, globals, JSON behavior, console, timers, and `structuredClone`; the project does not implement or register replacements for these APIs. `applyFlavor` copies its input and each result using LLRT’s `structuredClone`.
 
-```js
-import { Buffer } from 'node:buffer'
-import * as url from 'node:url'
+Each scripted request creates its own VM. Configuration files and flavor source are loaded on demand without application-level content caching; module state is not shared between requests. LLRT’s own library bundle is embedded at build time, without the AWS SDK. This is separate from user flavor files, which are interpreted on demand. LLRT also owns process-global infrastructure, including HTTP clients and timer bookkeeping; apart from the per-VM memory limit below, this service does not override its memory-management behavior.
+
+Flavors are trusted server-side code: the full VM exposes LLRT facilities such as filesystem, process, and networking. It is not a sandbox. Synchronous and returned-Promise failures become HTTP 500 responses. LLRT background-task errors are logged instead of using its default process-exit handler; a script that never settles its returned Promise can still leave a request pending.
+
+Each script VM is limited by `vm_options` in config/config.json5. Sizes are strings such as `"64MiB"`, `"512KiB"` or `"50 MB"`; KiB/MiB are binary, KB/MB decimal.
+
+- `memory_limit` (default `"64MiB"`, `"0"` disables it) caps JavaScript engine memory. Native allocations made by LLRT modules outside the engine are not counted.
+- `max_stack_size` (default: LLRT's 512 KiB) caps the JavaScript stack. It must be greater than 0 and at most 1 MiB, because scripts run on threads with a 2 MiB native stack.
+
+A script that exceeds either limit fails with HTTP 500. Flavors are not checked for cycles, so a flavor that applies itself directly or indirectly runs until it hits the memory limit.
+
+```json5
+{
+  vm_options: { memory_limit: '64MiB', max_stack_size: '512KiB' },
+  acls: [/* ... */],
+}
 ```
 
-## Authentication and filters
+## Authentication
 
-Authentication is configured in `config/config.json5`. Tokens are deliberately
-stored as plain text. The configuration may contain one ACL object or an array
-of ACL objects:
+Authentication is configured in config/config.json5. Tokens are plain text. An ACL can be one object, an array, or a map from token to filters:
 
 ```json5
 {
@@ -73,25 +70,13 @@ of ACL objects:
 }
 ```
 
-An ACL with an empty token enables anonymous access. Its `token` query
-parameter may therefore be omitted. String filters are regular-expression
-allow rules. An object with `invert: true` allows names that do not match its
-regular expression. Filters in one ACL are alternatives, so the example
-allows `base` and every flavor that does not start with `_`.
-
-An unknown token receives `403`, while a request without a token when no
-anonymous ACL matches receives `401`.
+Filters are regular expressions and are alternatives within an ACL. An inverted filter allows names that do not match. An empty-token ACL enables anonymous access. Unknown or unauthorized tokens return 403; an unauthorized request without a token returns 401.
 
 ## Docker
 
+Both build and runtime stages use Alpine 3.24. Build-only Node.js, npm, and zstd are absent from the final image. TLS and crypto use LLRT’s ring backends.
+
 ```sh
 docker build -t simple-config-provider .
-docker run --rm -p 3000:3000 -v "$PWD/config:/app/config:ro" \
-  simple-config-provider
+docker run --rm -p 3000:3000 -v "$PWD/config:/app/config:ro" simple-config-provider
 ```
-
-## Technology and localization
-
-The project uses Node.js, PNPM, and an Alpine-based Docker image. Source code
-comments are written in English, and the documentation is available in both
-English and Chinese.

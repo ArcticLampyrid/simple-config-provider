@@ -1,0 +1,15 @@
+{
+  // Tokens are deliberately stored as plain text. Filters are regular
+  // expressions matched against the flavor name; anchor them with ^ and $ to
+  // match a name exactly.
+  // Limits for each script VM. memory_limit (default '64MiB', '0' = unlimited)
+  // also stops flavors that apply themselves in a cycle. max_stack_size
+  // defaults to LLRT's 512 KiB and may be at most '1MiB'.
+  vm_options: { memory_limit: '64MiB', max_stack_size: '512KiB' },
+  acls: [
+    // The secret token may read `base` and every flavor not starting with `_`.
+    { token: 'secret', filter: ['^base$', { pattern: '^_', invert: true }] },
+    // Requests without a token may read the public flavor only.
+    { token: '', filter: ['^public$'] },
+  ],
+}

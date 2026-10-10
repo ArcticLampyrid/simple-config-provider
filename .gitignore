@@ -1,4 +1,4 @@
-node_modules/
-config/
-npm-debug.log*
-pnpm-debug.log*
+/target/
+/config/
+/node_modules/
+*.log
