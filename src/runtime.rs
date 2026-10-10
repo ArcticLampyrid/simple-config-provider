@@ -33,7 +33,7 @@ pub async fn evaluate(
         ..defaults
     })
     .await
-    .map_err(|e| Error::ScriptSource(e.into()))?;
+    .map_err(Error::ScriptSource)?;
     // Set after VM creation so LLRT's own setup is not cut short; the limit
     // still counts that baseline. Runaway scripts fail with "out of memory".
     vm.runtime
